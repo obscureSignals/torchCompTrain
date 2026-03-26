@@ -1,0 +1,8 @@
+train:
+  input: /Users/bthomp23/Desktop/SSL_CV_dataset/audio_in/clip_00000.wav
+  target_audio: /Users/bthomp23/Desktop/SSL_CV_dataset/audio_out/p018/clip_00000_p018.wav
+  target_cv: /Users/bthomp23/Desktop/SSL_CV_dataset/cv/p018/clip_00000_p018.wav
+test:
+  input: ${..train.input}
+  target_audio: ${..train.target_audio}
+  target_cv: ${..train.target_cv}

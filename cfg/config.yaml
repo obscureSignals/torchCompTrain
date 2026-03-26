@@ -1,11 +1,9 @@
 defaults:
-  - data: la2a_50
+  - data: ssl_cv
 
-epochs: 1000
+epochs: 2000
 ckpt_path: ckpt.yaml
 compressor:
-  freq_sampling: false
-  simple: false
   inits:
     rms_avg: 0.3
     threshold: -10.0
@@ -18,19 +16,28 @@ compressor:
   spsa: false
 
 optimiser:
-  _target_: torch.optim.SGD
-  lr: 100
-  momentum: 0.9
+  _target_: torch.optim.Adam
+  lr: 0.01
 
 scheduler:
-  _target_: torch.optim.lr_scheduler.LinearLR
-  start_factor: 1.0
-  end_factor: 1.0
-  total_iters: ${epochs}
+  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  mode: min
+  factor: 0.5
+  patience: 25
+  threshold: 1e-4
+  min_lr: 1e-5
+
+loss_signal: audio   # audio | cv
 
 loss_fn:
   _target_: torch.nn.L1Loss
   reduction: mean
+
+#  _target_: losses.MSTELoss
+#  frame_lengths: [ 8, 16, 32, 64 ]
+#  overlap: 0.75
+
+
 
 wandb_init:
   project: dafx24
