@@ -22,6 +22,7 @@ from cv_align import (align_cv)
 
 import matplotlib.pyplot as plt
 from pathlib import Path
+import time
 
 def compute_gr_l1_db(
     pred_gain: torch.Tensor,
@@ -263,12 +264,6 @@ def train(cfg: DictConfig):
         b_coeffs=torch.tensor([1, -1], dtype=torch.float32, device=train_input.device),
         clamp=False,
     )
-
-    # train_target_audio = prefilter(train_target_audio)
-    # if test_input is not None:
-    #     test_target_audio = prefilter(test_target_audio)
-
-    # filtered_esr = lambda x, y: esr(prefilter(x), prefilter(y))
 
     def dump_params(loss=None):
         # convert params to dict for yaml

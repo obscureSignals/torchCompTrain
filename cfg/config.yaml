@@ -17,7 +17,7 @@ compressor:
 
 optimiser:
   _target_: torch.optim.Adam
-  lr: 0.01
+  lr: 0.02
 
 scheduler:
   _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
@@ -30,12 +30,12 @@ scheduler:
 loss_signal: audio   # audio | cv
 
 loss_fn:
-  _target_: torch.nn.L1Loss
-  reduction: mean
+#  _target_: torch.nn.L1Loss
+#  reduction: mean
 
-#  _target_: losses.MSTELoss
-#  frame_lengths: [ 8, 16, 32, 64 ]
-#  overlap: 0.75
+  _target_: losses.MSTELoss
+  frame_lengths: [ 8, 16, 32, 64 ]
+  overlap: 0.75
 
 
 

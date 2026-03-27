@@ -3,3 +3,5 @@ outputs/
 .vscode/
 .venv/
 .idea/
+sweep_runs/
+
