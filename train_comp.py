@@ -1,45 +1,47 @@
-import torch
-from torch.nn import ParameterDict, Parameter
-import wandb
-from tqdm import tqdm
+import time
+from functools import partial
+from itertools import accumulate
+from pathlib import Path
+from typing import Any
+
 import hydra
-from omegaconf import OmegaConf, DictConfig
-from functools import partial, reduce
-from itertools import chain, starmap, accumulate
-from typing import Any, Dict, List, Tuple
+import matplotlib.pyplot as plt
+import pyloudnorm as pyln
+import torch
+import wandb
 import yaml
+from omegaconf import OmegaConf, DictConfig
+from torch.nn import ParameterDict, Parameter
 from torchaudio import load
 from torchaudio.functional import lfilter
-from torchcomp import ms2coef, coef2ms, db2amp
-import pyloudnorm as pyln
+from torchcomp import ms2coef, coef2ms
+from tqdm import tqdm
 
+from cv_align import (align_cv)
 from utils import (
     arcsigmoid,
     compressor,
     esr,
 )
-from cv_align import (align_cv)
 
-import matplotlib.pyplot as plt
-from pathlib import Path
-import time
 
 def compute_gr_l1_db(
-    pred_gain: torch.Tensor,
-    target_cv: torch.Tensor,
+        pred_gain: torch.Tensor,
+        target_cv: torch.Tensor,
 ) -> torch.Tensor:
     eps = 1e-8
     pred_gain_db = 20.0 * torch.log10(torch.clamp(pred_gain, min=eps))
     return torch.mean(torch.abs(pred_gain_db - target_cv))
 
+
 def save_training_plot(
-    loss_in: torch.Tensor,
-    loss_tgt: torch.Tensor,
-    pred_gain: torch.Tensor,
-    target_cv: torch.Tensor,
-    sr: int,
-    step: int,
-    out_dir: str = "temp_plots",
+        loss_in: torch.Tensor,
+        loss_tgt: torch.Tensor,
+        pred_gain: torch.Tensor,
+        target_cv: torch.Tensor,
+        sr: int,
+        step: int,
+        out_dir: str = "temp_plots",
 ):
     Path(out_dir).mkdir(parents=True, exist_ok=True)
 
@@ -107,7 +109,7 @@ def get_loss_tensors(
 
     if loss_signal == "audio":
         if loss_name == "MSTELoss":
-            return pred, target_audio # don't prefilter for MSTE
+            return pred, target_audio  # don't prefilter for MSTE
         return prefilter(pred), prefilter(target_audio)
 
     if loss_signal == "cv":
@@ -119,10 +121,9 @@ def get_loss_tensors(
 
     raise ValueError(f"Unsupported loss_signal: {loss_signal}")
 
+
 @hydra.main(config_path="cfg", config_name="config")
 def train(cfg: DictConfig):
-    # TODO: Add a proper logger
-
     tr_cfg = cfg.data.train
 
     train_input, sr = load(tr_cfg.input)
@@ -186,7 +187,7 @@ def train(cfg: DictConfig):
 
         assert sr == sr5, "Sample rates must match"
         assert (
-            test_input.shape == test_target_audio.shape
+                test_input.shape == test_target_audio.shape
         ), "Input and target shapes must match"
         assert test_input.shape[1] == test_target_cv.shape[1], "Input and target shapes must match"
 
@@ -282,6 +283,9 @@ def train(cfg: DictConfig):
 
     final_params = dump_params()
 
+    t0 = time.time()
+    history = []
+
     with tqdm(range(cfg.epochs)) as pbar:
 
         def step(lowest_loss: torch.Tensor, global_step: int):
@@ -337,16 +341,29 @@ def train(cfg: DictConfig):
             optimiser.step()
             scheduler.step(loss.item())
 
+            elapsed_sec = time.time() - t0
+
+            history.append(
+                {
+                    "step": int(global_step),
+                    "elapsed_sec": float(elapsed_sec),
+                    "native_loss": float(loss.item()),
+                    "gr_l1_db": float(gr_l1_db),
+                    "esr": float(esr_val),
+                }
+            )
+
             pbar_dict = {
                 "loss": loss.item(),
                 "lowest_loss": lowest_loss,
-                "make_up": param_make_up_gain.item(),
-                "lr": optimiser.param_groups[0]["lr"],
-                "esr": esr_val,
                 "gr_l1_db": gr_l1_db,
+                "elapsed_sec": elapsed_sec,
                 "ratio": param_ratio().item(),
                 "th": param_th.item(),
                 "attack_ms": c2m(param_at()).item(),
+                "make_up": param_make_up_gain.item(),
+                "lr": optimiser.param_groups[0]["lr"],
+                "esr": esr_val,
                 "release_ms": c2m(param_rt()).item(),
             }
 
@@ -400,9 +417,23 @@ def train(cfg: DictConfig):
         )
 
     print("Training complete. Saving model...")
+
+    final_params["elapsed_sec"] = time.time() - t0
+    final_params["sec_per_step"] = final_params["elapsed_sec"] / max(1, len(history))
+
     if cfg.ckpt_path:
-        yaml.dump(final_params, open(cfg.ckpt_path, "w"), sort_keys=True)
-        wandb.log_artifact(cfg.ckpt_path, type="parameters")
+        ckpt_path = Path(cfg.ckpt_path)
+        yaml.dump(final_params, open(ckpt_path, "w"), sort_keys=True)
+        wandb.log_artifact(str(ckpt_path), type="parameters")
+
+        hist_path = ckpt_path.with_suffix(".history.csv")
+        import csv
+        with open(hist_path, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["step", "elapsed_sec", "native_loss", "gr_l1_db", "esr"]
+            )
+            writer.writeheader()
+            writer.writerows(history)
 
     summary = {
         "loss": final_params["loss"],
@@ -412,6 +443,8 @@ def train(cfg: DictConfig):
         "attack_ms": final_params["formated_params"]["attack_ms"],
         "make_up": final_params["make_up_gain"],
         "esr": final_params["esr"],
+        "elapsed_sec": final_params["elapsed_sec"],
+        "sec_per_step": final_params["sec_per_step"]
     }
 
     run.summary.update(summary)
@@ -420,6 +453,7 @@ def train(cfg: DictConfig):
     print(final_params)
 
     return
+
 
 if __name__ == "__main__":
     train()
