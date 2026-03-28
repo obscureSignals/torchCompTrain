@@ -4,4 +4,5 @@ outputs/
 .venv/
 .idea/
 sweep_runs/
+.DS_Store
 

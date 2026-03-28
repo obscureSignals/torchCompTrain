@@ -77,6 +77,7 @@ REGIMES: List[Regime] = [
     ),
 ]
 
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
 
@@ -94,7 +95,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--examples-per-bucket",
         type=int,
-        default=2,
+        default=10,
         help="Target number of examples per ratio x release_mode bucket.",
     )
     p.add_argument(
@@ -103,8 +104,22 @@ def parse_args() -> argparse.Namespace:
         default=10,
         help="Optional hard cap on total examples after stratified selection.",
     )
+    p.add_argument(
+        "--allowed-ratios",
+        type=float,
+        nargs="+",
+        default=[10.0],
+        help="Optional list of allowed ratios to keep, e.g. --allowed-ratios 2 4 10",
+    )
+    p.add_argument(
+        "--allowed-release-modes",
+        type=str,
+        nargs="+",
+        default=["single"],
+        help="Optional list of allowed release modes to keep, e.g. --allowed-release-modes auto single",
+    )
     p.add_argument("--seed", type=int, default=1234)
-    p.add_argument("--epochs", type=int, default=None)
+    p.add_argument("--epochs", type=int, default=3000)
 
     p.add_argument(
         "--disable-wandb",
@@ -163,12 +178,28 @@ def load_metadata(path: Path) -> pd.DataFrame:
 
     return df
 
+def apply_cli_filters(
+    df: pd.DataFrame,
+    allowed_ratios: Optional[List[float]] = None,
+    allowed_release_modes: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    df = df.copy()
+
+    if allowed_ratios is not None:
+        allowed_ratios = set(allowed_ratios)
+        df = df[df["ratio"].isin(allowed_ratios)]
+
+    if allowed_release_modes is not None:
+        allowed_release_modes = {normalize_release_mode(x) for x in allowed_release_modes}
+        df = df[df["release_mode"].map(normalize_release_mode).isin(allowed_release_modes)]
+
+    return df
 
 def normalize_release_mode(x) -> str:
     s = str(x).strip().lower()
     if "auto" in s:
         return "auto"
-    return "manual"
+    return "single"
 
 
 def make_bucket_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -326,6 +357,8 @@ def aggregate_results(df: pd.DataFrame) -> pd.DataFrame:
         "gr_l1_db",
         "best_loss",
         "esr",
+        "elapsed_sec",
+        "sec_per_step",
         "test_gr_l1_db",
         "test_loss",
         "test_esr",
@@ -366,10 +399,21 @@ def write_latex_table(summary_df: pd.DataFrame, out_path: Path) -> None:
     lines = []
     for _, r in summary_df.iterrows():
         label = r["paper_label"]
-        gr = format_mean_std(r.get("gr_l1_db_mean"), r.get("gr_l1_db_std"))
-        native = format_mean_std(r.get("best_loss_mean"), r.get("best_loss_std"))
-        esr = format_mean_std(r.get("esr_mean"), r.get("esr_std"))
-        lines.append(f"{label} & {gr} & {native} & {esr} \\\\")
+
+        gr = format_mean_std(
+            r.get("gr_l1_db_mean"), r.get("gr_l1_db_std")
+        )
+
+        native = format_mean_std(
+            r.get("best_loss_mean"), r.get("best_loss_std")
+        )
+
+        sec_per_step = format_mean_std(
+            r.get("sec_per_step_mean"), r.get("sec_per_step_std"), digits=4
+        )
+
+        lines.append(f"{label} & {gr} & {native} & {sec_per_step} \\\\")
+
     out_path.write_text("\n".join(lines) + "\n")
 
 
@@ -386,6 +430,16 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     df = load_metadata(args.metadata)
+    df = apply_cli_filters(
+        df,
+        allowed_ratios=args.allowed_ratios,
+        allowed_release_modes=args.allowed_release_modes,
+    )
+
+    if df.empty:
+        raise ValueError("No rows remain after applying CLI filters.")
+
+
     selected = stratified_unique_clip_sample(
         df=df,
         examples_per_bucket=args.examples_per_bucket,
@@ -443,6 +497,8 @@ def main() -> None:
                 "best_loss": None,
                 "gr_l1_db": None,
                 "esr": None,
+                "elapsed_sec": None,
+                "sec_per_step": None,
                 "test_loss": None,
                 "test_gr_l1_db": None,
                 "test_esr": None,
@@ -463,6 +519,8 @@ def main() -> None:
                             "best_loss": safe_float(ckpt.get("loss")),
                             "gr_l1_db": safe_float(ckpt.get("gr_l1_db")),
                             "esr": safe_float(ckpt.get("esr")),
+                            "elapsed_sec": safe_float(ckpt.get("elapsed_sec")),  # <-- ADD
+                            "sec_per_step": safe_float(ckpt.get("sec_per_step")),  # <-- ADD
                             "test_loss": safe_float(ckpt.get("test_loss")),
                             "test_gr_l1_db": safe_float(ckpt.get("test_gr_l1_db")),
                             "test_esr": safe_float(ckpt.get("test_esr")),
@@ -497,22 +555,21 @@ def main() -> None:
     print(f"Summary CSV:   {summary_csv}")
     print(f"LaTeX rows:    {latex_txt}")
 
-    if not summary_df.empty:
-        print("\nSummary:")
-        print(
-            summary_df[
-                [
-                    "paper_label",
-                    "n",
-                    "gr_l1_db_mean",
-                    "gr_l1_db_std",
-                    "best_loss_mean",
-                    "best_loss_std",
-                    "esr_mean",
-                    "esr_std",
-                ]
-            ].to_string(index=False)
-        )
+    print("\nSummary:")
+    print(
+        summary_df[
+            [
+                "paper_label",
+                "n",
+                "gr_l1_db_mean",
+                "gr_l1_db_std",
+                "best_loss_mean",
+                "best_loss_std",
+                "sec_per_step_mean",
+                "sec_per_step_std",
+            ]
+        ].to_string(index=False)
+    )
 
 
 if __name__ == "__main__":
